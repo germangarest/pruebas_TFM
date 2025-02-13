@@ -10,17 +10,15 @@ import gc
 import torch
 import torch.nn as nn
 
+# Registrar Sequential y TimeDistributed con la versión arreglada
 tf.keras.utils.get_custom_objects()['Sequential'] = tf.keras.models.Sequential
 from tensorflow.keras.layers import TimeDistributed as OriginalTimeDistributed
 
-# Definir la subclase personalizada de TimeDistributed
 class FixedTimeDistributed(OriginalTimeDistributed):
     def __init__(self, *args, **kwargs):
         super(FixedTimeDistributed, self).__init__(*args, **kwargs)
-        # Inicializar el atributo requerido
         self._self_tracked_trackables = {}
 
-# Registrar la versión "arreglada" en los objetos personalizados de Keras
 tf.keras.utils.get_custom_objects()['TimeDistributed'] = FixedTimeDistributed
 
 # ====================== CONSTANTES ======================
@@ -67,7 +65,6 @@ if gpus:
     try:
         for gpu in gpus:
             tf.config.experimental.set_memory_growth(gpu, True)
-        # Limitar memoria GPU (opcional)
         tf.config.set_logical_device_configuration(
             gpus[0],
             [tf.config.LogicalDeviceConfiguration(memory_limit=1024)]
@@ -85,21 +82,17 @@ try:
     from tensorflow.python.keras.engine.functional import Functional
     tf.keras.utils.get_custom_objects()['Functional'] = Functional
 except ImportError:
-    # Si no se encuentra, puede que estés usando una versión en la que no es necesario
     pass
 
 # Versión "arreglada" de InputLayer para evitar conflictos
 from tensorflow.keras.layers import InputLayer as _InputLayer
 class FixedInputLayer(_InputLayer):
     def __init__(self, **kwargs):
-        # Si se especifica 'batch_shape', se transforma a 'batch_input_shape'
         if 'batch_shape' in kwargs:
             kwargs['batch_input_shape'] = kwargs.pop('batch_shape')
         super(FixedInputLayer, self).__init__(**kwargs)
-        # Agregar el atributo que falta para evitar el error
         self._self_tracked_trackables = {}
 
-# Registrar BatchNormalization para la deserialización
 from tensorflow.keras.layers import BatchNormalization
 tf.keras.utils.get_custom_objects()['BatchNormalization'] = BatchNormalization
 
@@ -110,12 +103,11 @@ tf.config.threading.set_intra_op_parallelism_threads(1)
 
 from tensorflow.keras.layers import BatchNormalization, TimeDistributed
 
-# Registrar globalmente los objetos personalizados
 custom_objects = {
     'DTypePolicy': tf.keras.mixed_precision.Policy,
     'InputLayer': FixedInputLayer,
     'BatchNormalization': CustomBatchNormalization,
-    'BatchNormalizationV2': CustomBatchNormalization,  # Por si el modelo lo requiere
+    'BatchNormalizationV2': CustomBatchNormalization,
     'TimeDistributed': FixedTimeDistributed     
 }
 tf.keras.utils.get_custom_objects().update(custom_objects)
@@ -134,7 +126,7 @@ def load_models():
         accident_model(dummy_accident)
         
     # --- Modelo de Incendios (TensorFlow) ---
-    fire_model = tf.keras.models.load_model('models/model_fire.h5', compile=False, custom_objects=custom_objects )
+    fire_model = tf.keras.models.load_model('models/model_fire.h5', compile=False, custom_objects=custom_objects)
     fire_model.compile(jit_compile=True)
     dummy_fire = tf.zeros((1, FIRE_IMG_SIZE, FIRE_IMG_SIZE, 3))
     _ = fire_model(dummy_fire)
@@ -173,38 +165,24 @@ except Exception as e:
 
 # ====================== FUNCIONES AUXILIARES ======================
 def resize_frame(frame, size=(640, 480)):
-    """Redimensiona el frame para visualización."""
     return cv2.resize(frame, size, interpolation=cv2.INTER_AREA)
 
 @tf.function(reduce_retracing=True)
 def predict_batch(model, input_tensor):
-    """Predicción optimizada con TensorFlow."""
     return model(input_tensor, training=False)
 
 def process_frame(frame, state):
-    """
-    Procesa un frame para cada modelo:
-      - Preprocesamiento (redimensionamiento y normalización).
-      - Manejo de buffers para secuencias (para accidentes y peleas).
-      - Generación de tensores de entrada.
-      - Realización de las predicciones y aplicación de suavizado.
-      - Inserción de alertas en el frame de salida.
-    """
-    # --- Preprocesamiento ---
-    # Accidentes: redimensionar a 160x160
+    # Preprocesamiento
     resized_accident = cv2.resize(frame, (ACCIDENT_IMG_SIZE, ACCIDENT_IMG_SIZE), interpolation=cv2.INTER_AREA)
     processed_accident = np.float32(resized_accident) / 255.0
-    
-    # Peleas: redimensionar a 64x64
+
     resized_fight = cv2.resize(frame, (FIGHT_IMG_SIZE, FIGHT_IMG_SIZE), interpolation=cv2.INTER_AREA)
     processed_fight = np.float32(resized_fight) / 255.0
-    
-    # Incendios: redimensionar a 128x128
+
     resized_fire = cv2.resize(frame, (FIRE_IMG_SIZE, FIRE_IMG_SIZE), interpolation=cv2.INTER_AREA)
     processed_fire = np.float32(resized_fire) / 255.0
 
-    # --- Manejo de buffers en st.session_state ---
-    # Inicializar buffers si no existen
+    # Manejo de buffers en st.session_state
     if 'accident_buffer' not in state:
         state['accident_buffer'] = []
     if 'fight_buffer' not in state:
@@ -216,48 +194,37 @@ def process_frame(frame, state):
     if "last_fire_event_time" not in st.session_state:
         st.session_state["last_fire_event_time"] = None
 
-        
     state['accident_buffer'].append(processed_accident)
     state['fight_buffer'].append(processed_fight)
-    # Mantener solo los últimos SEQUENCE_LENGTH frames
     state['accident_buffer'] = state['accident_buffer'][-SEQUENCE_LENGTH:]
     state['fight_buffer'] = state['fight_buffer'][-SEQUENCE_LENGTH:]
     
-    # Rellenar secuencias si son menores que SEQUENCE_LENGTH
     accident_seq = state['accident_buffer'] if len(state['accident_buffer']) == SEQUENCE_LENGTH else state['accident_buffer'] + [processed_accident] * (SEQUENCE_LENGTH - len(state['accident_buffer']))
     fight_seq = state['fight_buffer'] if len(state['fight_buffer']) == SEQUENCE_LENGTH else state['fight_buffer'] + [processed_fight] * (SEQUENCE_LENGTH - len(state['fight_buffer']))
     
-    # --- Preparación de tensores ---
-    # Modelo de Accidentes: (1, SEQUENCE_LENGTH, 160, 160, 3)
     accident_input = tf.convert_to_tensor(np.expand_dims(np.array(accident_seq), axis=0))
     
-    # Modelo de Peleas (PyTorch):
-    # Convertir secuencia: (T, H, W, 3) -> (1, 3, T, H, W)
-    fight_input = np.array(fight_seq)                        # (T, H, W, 3)
-    fight_input = np.transpose(fight_input, (0, 3, 1, 2))     # (T, 3, H, W)
-    fight_input = np.expand_dims(fight_input, axis=0)          # (1, T, 3, H, W)
-    fight_input = np.transpose(fight_input, (0, 2, 1, 3, 4))   # (1, 3, T, H, W)
+    # Modelo de Peleas (PyTorch): (T, H, W, 3) -> (1, 3, T, H, W)
+    fight_input = np.array(fight_seq)
+    fight_input = np.transpose(fight_input, (0, 3, 1, 2))
+    fight_input = np.expand_dims(fight_input, axis=0)
+    fight_input = np.transpose(fight_input, (0, 2, 1, 3, 4))
     fight_input = torch.tensor(fight_input, dtype=torch.float32).to(torch_device)
     
-    # Modelo de Incendios: (1, 128, 128, 3)
     fire_input = tf.convert_to_tensor(np.expand_dims(processed_fire, axis=0))
     
-    # --- Realización de predicciones ---
-    # Accidentes (TensorFlow)
+    # Realización de predicciones
     accident_pred = predict_batch(accident_model, accident_input)
     accident_prob = float(accident_pred[0][0])
     
-    # Peleas (PyTorch)
     with torch.no_grad():
         fight_output = fight_model(fight_input)
         fight_prob = torch.sigmoid(fight_output).item()
     
-    # Incendios (TensorFlow)
-    # Se asume que la salida tiene dos elementos y el índice 1 corresponde a la probabilidad de incendio.
     fire_pred = fire_model(fire_input, training=False)
     fire_prob = float(fire_pred[0][1])
     
-    # --- Suavizado de predicciones ---
+    # Suavizado de predicciones
     for key in ['accident_predictions', 'fight_predictions', 'fire_predictions']:
         if key not in state:
             state[key] = []
@@ -274,8 +241,7 @@ def process_frame(frame, state):
     state['last_fight_pred'] = fight_smooth
     state['last_fire_pred'] = fire_smooth
 
-    # --- Visualización de alertas en el frame ---
-    out_frame = resize_frame(frame)  # Redimensionar para visualización final
+    out_frame = resize_frame(frame)
     if accident_smooth > ACCIDENT_THRESHOLD:
         cv2.putText(out_frame, "POSIBLE ACCIDENTE", (10, out_frame.shape[0] - 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
@@ -288,14 +254,8 @@ def process_frame(frame, state):
     
     return out_frame, accident_smooth, fight_smooth, fire_smooth
 
-
 def add_detection_event(event_type, confidence, last_event_key):
-    """
-    Agrega un evento de detección al historial si no se ha registrado uno muy recientemente.
-    Se utiliza last_event_key para llevar un control del tiempo del último evento de este tipo.
-    """
     current_time = datetime.now()
-    # Si nunca se registró o han pasado más de 10 segundos desde el último evento de este tipo
     if (st.session_state.get(last_event_key) is None or 
         (current_time - st.session_state[last_event_key]).total_seconds() > 10):
         event = {
@@ -313,7 +273,6 @@ for key in ['detection_history', 'detected_events', 'consecutive_alerts_accident
             'current_video_name', 'webcam_active', 'last_accident_pred', 'last_fight_pred', 'last_fire_pred',
             'accident_predictions', 'fight_predictions', 'fire_predictions', 'accident_buffer', 'fight_buffer', 'run']:
     if key not in st.session_state:
-        # Inicializamos cada variable con un valor adecuado
         if key in ['detection_history']:
             st.session_state[key] = []
         elif key in ['detected_events']:
@@ -343,23 +302,19 @@ st.markdown("""
     </div>
     <p class="report-font">Opciones disponibles:</p>
     <ul class="report-font">
-        <li><strong>Webcam:</strong> detección en tiempo real usando la cámara del dispositivo.</li>
         <li><strong>Analizar Video:</strong> subir un vídeo para evaluar el sistema.</li>
         <li><strong>Historial:</strong> registro de incidentes detectados.</li>
     </ul>
 """, unsafe_allow_html=True)
 
-# Navegación entre pestañas
-active_tab = st.radio("Selecciona una opción:", ["Webcam", "Analizar Video", "Historial"], horizontal=True, key="active_tab")
+# Navegación entre pestañas (solo "Analizar Video" y "Historial")
+active_tab = st.radio("Selecciona una opción:", ["Analizar Video", "Historial"], horizontal=True, key="active_tab")
 
-# Si no está en Webcam o Analizar Video se para la ejecución de la cámara/video
-if active_tab != "Webcam":
-    st.session_state['run'] = False
 if active_tab != "Analizar Video":
     st.session_state.pop("video_uploader", None)
 
 # ====================== PESTAÑA: ANALIZAR VIDEO ======================
-elif active_tab == "Analizar Video":
+if active_tab == "Analizar Video":
     st.header("Análisis de Video")
     col1, col2 = st.columns([3, 1])
     
@@ -375,17 +330,13 @@ elif active_tab == "Analizar Video":
         alert_placeholder = st.empty()
     
     if video_file is not None:
-        # Actualiza el nombre actual a partir del archivo subido
         st.session_state["current_video_name"] = video_file.name
-    
-        # Reiniciamos los buffers y las listas de predicciones para el nuevo vídeo
         st.session_state["accident_buffer"] = []
         st.session_state["fight_buffer"] = []
         st.session_state["accident_predictions"] = []
         st.session_state["fight_predictions"] = []
         st.session_state["fire_predictions"] = []
     
-        # Crear carpeta temporal y guardar el vídeo subido
         temp_dir = "temp_videos"
         if not os.path.exists(temp_dir):
             os.makedirs(temp_dir)
@@ -398,21 +349,17 @@ elif active_tab == "Analizar Video":
                 f.write(video_file.read())
             
             cap = cv2.VideoCapture(temp_path)
-            # Obtener el FPS real del vídeo; si no se obtiene, se usa DISPLAY_FPS
             video_fps = cap.get(cv2.CAP_PROP_FPS)
             if not video_fps or video_fps <= 0:
                 video_fps = DISPLAY_FPS
 
-            # Parámetro para procesar solo algunos frames
-            frame_skip_interval = 5  # Procesa cada 5º frame; ajusta según lo necesites
+            frame_skip_interval = 5  # Procesa cada 5º frame
             frame_count = 0
 
-            # Variables para almacenar la última inferencia obtenida
             last_accident_prob = None
             last_fight_prob = None
             last_fire_prob = None
 
-            # Se usará la información de sincronización del vídeo (timestamp interno)
             start_time = time.time()
             
             while cap.isOpened():
@@ -421,27 +368,19 @@ elif active_tab == "Analizar Video":
                     break
 
                 frame_count += 1
-
-                # Sincronización usando el timestamp interno del vídeo
-                video_timestamp = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0  # en segundos
+                video_timestamp = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
                 elapsed = time.time() - start_time
                 if video_timestamp > elapsed:
                     time.sleep(video_timestamp - elapsed)
                 
-                # Si es un frame que se procesa, se actualizan las predicciones
                 if frame_count % frame_skip_interval == 0:
-                    # Llamamos a la función de procesamiento para obtener la imagen con overlay y las predicciones
                     processed_frame, accident_prob, fight_prob, fire_prob = process_frame(frame, st.session_state)
-                    # Actualizamos las variables con las últimas inferencias
                     last_accident_prob = accident_prob
                     last_fight_prob = fight_prob
                     last_fire_prob = fire_prob
-                    # Para mantener la visualización "tal como se subió", usamos el frame original redimensionado
                     out_frame = resize_frame(frame)
                 else:
-                    # Para los frames en los que no se procesa, usamos el frame original redimensionado...
                     out_frame = resize_frame(frame)
-                    # ...y sobreponemos la información de la última inferencia (si ya se ha obtenido alguna)
                     if last_accident_prob is not None:
                         if last_accident_prob > ACCIDENT_THRESHOLD:
                             cv2.putText(out_frame, "POSIBLE ACCIDENTE", (10, out_frame.shape[0]-30),
@@ -453,10 +392,8 @@ elif active_tab == "Analizar Video":
                             cv2.putText(out_frame, "POSIBLE INCENDIO", (10, 30),
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                 
-                # Mostrar el frame (si es procesado o no, se mostrará el frame original con el overlay adecuado)
                 placeholder_vid.image(out_frame, channels="BGR")
                 
-                # Actualizar los paneles de predicción usando los valores de la última inferencia
                 if last_accident_prob is not None:
                     accident_placeholder.markdown(
                         f"""
@@ -489,7 +426,6 @@ elif active_tab == "Analizar Video":
                 if last_fire_prob is not None and last_fire_prob > FIRE_THRESHOLD:
                     add_detection_event("Incendio", last_fire_prob, "last_fire_event_time")
 
-                # Mostrar alerta si alguna de las predicciones supera su umbral
                 if (last_accident_prob is not None and last_accident_prob > ACCIDENT_THRESHOLD) or \
                    (last_fight_prob is not None and last_fight_prob > FIGHT_THRESHOLD) or \
                    (last_fire_prob is not None and last_fire_prob > FIRE_THRESHOLD):
@@ -516,7 +452,6 @@ elif active_tab == "Analizar Video":
 elif active_tab == "Historial":
     st.header("Historial de Detecciones")
     
-    # Recuperamos la lista de detecciones de forma segura
     detection_history = st.session_state.get("detection_history", [])
     
     if detection_history and len(detection_history) > 0:
@@ -526,10 +461,7 @@ elif active_tab == "Historial":
             if not required_columns.issubset(df.columns):
                 st.error("La estructura de las detecciones no es la esperada. Revisa el formato de los datos.")
             else:
-                # Convertir la columna 'timestamp' al formato "día-mes-año hora:min:seg"
                 df["timestamp"] = pd.to_datetime(df["timestamp"], errors='coerce').dt.strftime("%d-%m-%Y %H:%M:%S")
-                
-                # Ordenar por video y timestamp
                 df = df.sort_values(by=["video", "timestamp"])
                 
                 st.subheader("Resumen por Video")
@@ -554,7 +486,6 @@ elif active_tab == "Historial":
     else:
         st.write("No hay detecciones registradas aún.")
     
-    # Botón para limpiar el historial
     if st.button("Limpiar Historial", use_container_width=True):
         st.session_state["detection_history"] = []
         st.session_state["detected_events"] = set()
