@@ -5,15 +5,10 @@ import torch
 import torch.nn as nn
 import numpy as np
 
-# Registra la clase Sequential en los objetos personalizados de Keras
+# Registrar Sequential (ya lo tienes)
 tf.keras.utils.get_custom_objects()['Sequential'] = tf.keras.models.Sequential
 
-# Parámetros
-ACCIDENT_IMG_SIZE = 160   # Tamaño para modelo de accidentes
-FIRE_IMG_SIZE = 128       # Tamaño para modelo de incendios
-SEQUENCE_LENGTH = 5
-
-# Definir y registrar la clase personalizada de TimeDistributed
+# Definir y registrar la clase personalizada de TimeDistributed (ya lo tienes)
 from tensorflow.keras.layers import TimeDistributed as OriginalTimeDistributed
 
 class FixedTimeDistributed(OriginalTimeDistributed):
@@ -23,11 +18,29 @@ class FixedTimeDistributed(OriginalTimeDistributed):
 
 tf.keras.utils.get_custom_objects()['TimeDistributed'] = FixedTimeDistributed
 
-# Definir custom_objects usando la clase arreglada directamente
+# Definir y registrar la versión "arreglada" de LSTM
+from tensorflow.keras.layers import LSTM as OriginalLSTM
+
+class FixedLSTM(OriginalLSTM):
+    def __init__(self, *args, **kwargs):
+        if 'time_major' in kwargs:
+            kwargs.pop('time_major')
+        super(FixedLSTM, self).__init__(*args, **kwargs)
+
+tf.keras.utils.get_custom_objects()['LSTM'] = FixedLSTM
+
+# Definir custom_objects usando las clases corregidas
 custom_objects = {
     'DTypePolicy': tf.keras.mixed_precision.Policy,
-    'TimeDistributed': FixedTimeDistributed
+    'TimeDistributed': FixedTimeDistributed,
+    'LSTM': FixedLSTM
 }
+tf.keras.utils.get_custom_objects().update(custom_objects)
+
+# Parámetros de ejemplo
+ACCIDENT_IMG_SIZE = 160
+FIRE_IMG_SIZE = 128
+SEQUENCE_LENGTH = 5
 
 # ----- Prueba 1: Cargar modelo de Accidentes (TensorFlow) -----
 def test_load_accident_model():
