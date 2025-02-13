@@ -5,6 +5,9 @@ import torch
 import torch.nn as nn
 import numpy as np
 
+# Registra la clase Sequential en los objetos personalizados de Keras
+tf.keras.utils.get_custom_objects()['Sequential'] = tf.keras.models.Sequential
+
 # Parámetros
 ACCIDENT_IMG_SIZE = 160   # Tamaño para modelo de accidentes
 FIRE_IMG_SIZE = 128       # Tamaño para modelo de incendios
