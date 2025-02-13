@@ -98,8 +98,6 @@ tf.keras.utils.get_custom_objects()['BatchNormalization'] = BatchNormalization
 
 # Optimización XLA para TensorFlow
 tf.config.optimizer.set_jit(True)
-tf.config.threading.set_inter_op_parallelism_threads(1)
-tf.config.threading.set_intra_op_parallelism_threads(1)
 
 from tensorflow.keras.layers import BatchNormalization, TimeDistributed
 
