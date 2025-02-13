@@ -21,6 +21,18 @@ class FixedTimeDistributed(OriginalTimeDistributed):
 
 tf.keras.utils.get_custom_objects()['TimeDistributed'] = FixedTimeDistributed
 
+from tensorflow.keras.layers import LSTM as OriginalLSTM
+
+class FixedLSTM(OriginalLSTM):
+    def __init__(self, *args, **kwargs):
+        if 'time_major' in kwargs:
+            kwargs.pop('time_major')
+        super(FixedLSTM, self).__init__(*args, **kwargs)
+        # Agrega el atributo que falta para el tracking interno
+        self._self_tracked_trackables = {}
+
+tf.keras.utils.get_custom_objects()['LSTM'] = FixedLSTM
+
 # ====================== CONSTANTES ======================
 ACCIDENT_IMG_SIZE = 160   # Tamaño para modelo de accidentes
 FIGHT_IMG_SIZE = 64       # Tamaño para modelo de peleas
@@ -106,7 +118,8 @@ custom_objects = {
     'InputLayer': FixedInputLayer,
     'BatchNormalization': CustomBatchNormalization,
     'BatchNormalizationV2': CustomBatchNormalization,
-    'TimeDistributed': FixedTimeDistributed     
+    'TimeDistributed': FixedTimeDistributed,
+    'LSTM': FixedLSTM
 }
 tf.keras.utils.get_custom_objects().update(custom_objects)
 
